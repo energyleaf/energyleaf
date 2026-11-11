@@ -86,7 +86,7 @@ See [Limitations](https://github.com/energyleaf/energyleaf/wiki/Limitations) bef
 | [`app/sidecar`](https://github.com/energyleaf/energyleaf/blob/main/app/sidecar)    | Sidecar service running scheduled actions          |
 | [`firmware`](https://github.com/energyleaf/energyleaf/blob/main/firmware)       | Sensor firmware sources                            |
 | [`raspberrypi`](https://github.com/energyleaf/energyleaf/blob/main/raspberrypi)    | Base station configuration (Zigbee2MQTT converter) |
-| [`3d_prints`](https://github.com/energyleaf/energyleaf/blob/main/3d_prints)      | Sensor housing models                              |
+| [`3d_models`](https://github.com/energyleaf/energyleaf/blob/main/3d_models)      | Sensor housing models                              |
 
 ## Getting started
 
