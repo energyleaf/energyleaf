@@ -2,7 +2,7 @@
 <div align="center">
 <strong>Energyleaf</strong>  
 <br/>
-<img src="wiki/images/logo.png" width="50"/>
+<img src="docs/images/logo.png" width="50"/>
 </div>
 
 
