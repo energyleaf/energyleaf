@@ -1,0 +1,2009 @@
+"use server";
+
+import { hash } from "@node-rs/argon2";
+import { waitUntil } from "@vercel/functions";
+import { eq, sql } from "drizzle-orm";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import type { z } from "zod";
+import { type ExperimentPhaseValue, type TariffTypeValue, SimulationType, type SimulationTypeValue } from "@/lib/enums";
+import { ErrorTypes, LogActionTypes } from "@/lib/log-types";
+import { adminCreateUserSchema, adminExperimentSchema, adminHintConfigSchema } from "@/lib/schemas/admin-schema";
+import {
+	accountInfoSchema,
+	accountNameSchema,
+	adminAccountStatusSchema,
+	batterySettingsSchema,
+	energyGoalSchema,
+	energyTariffSchema,
+	evSettingsSchema,
+	heatPumpSettingsSchema,
+	householdSchema,
+	solarSettingsSchema,
+	touTariffSchema,
+} from "@/lib/schemas/profile-schema";
+import { genID } from "@/lib/utils";
+import { db } from "../db";
+import { reportConfigTable } from "../db/tables/reports";
+import {
+	simulationBatterySettingsTable,
+	simulationEvSettingsTable,
+	simulationHeatPumpSettingsTable,
+	simulationSolarSettingsTable,
+	simulationTouTariffSettingsTable,
+} from "../db/tables/simulation";
+import { userDataTable, userExperimentDataTable, userTable } from "../db/tables/user";
+import { getCurrentSession } from "../lib/auth";
+import { getOrCreateHintConfig, updateHintConfig } from "../queries/hints";
+import { logAction, logError } from "../queries/logs";
+
+export async function adminUpdateUserNameAction(userId: string, data: z.infer<typeof accountNameSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_USER_NAME_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = accountNameSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_USER_NAME_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		const oldData = await db
+			.select({
+				firstname: userTable.firstname,
+				lastname: userTable.lastname,
+			})
+			.from(userTable)
+			.where(eq(userTable.id, userId))
+			.limit(1);
+
+		if (oldData.length === 0) {
+			return {
+				success: false,
+				message: "Benutzer nicht gefunden.",
+			};
+		}
+
+		await db
+			.update(userTable)
+			.set({
+				firstname: data.firstname,
+				lastname: data.lastname,
+				username: `${data.firstname} ${data.lastname}`,
+			})
+			.where(eq(userTable.id, userId));
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_USER_NAME_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: oldData[0],
+						new: {
+							firstname: data.firstname,
+							lastname: data.lastname,
+						},
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Name erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_USER_NAME_ACTION,
+				error: err as unknown as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateUserInfoAction(userId: string, data: z.infer<typeof accountInfoSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_USER_INFO_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = accountInfoSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_USER_INFO_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		const oldData = await db
+			.select({
+				phone: userTable.phone,
+				address: userTable.address,
+				timezone: userTable.timezone,
+			})
+			.from(userTable)
+			.where(eq(userTable.id, userId))
+			.limit(1);
+
+		if (oldData.length === 0) {
+			return {
+				success: false,
+				message: "Benutzer nicht gefunden.",
+			};
+		}
+
+		await db
+			.update(userTable)
+			.set({
+				phone: data.phone,
+				address: data.address,
+				timezone: data.timezone,
+			})
+			.where(eq(userTable.id, userId));
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_USER_INFO_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: oldData[0],
+						new: data,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Kontaktdaten erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_USER_INFO_ACTION,
+				error: err as unknown as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateHouseholdAction(userId: string, data: z.infer<typeof householdSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_HOUSEHOLD_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = householdSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_HOUSEHOLD_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		// Check if user data exists
+		const existingData = await db
+			.select({
+				id: userDataTable.id,
+				property: userDataTable.property,
+				livingSpace: userDataTable.livingSpace,
+				household: userDataTable.household,
+			})
+			.from(userDataTable)
+			.where(eq(userDataTable.userId, userId))
+			.limit(1);
+
+		if (existingData.length === 0) {
+			// Create new user data entry
+			await db.insert(userDataTable).values({
+				userId,
+				property: data.houseType,
+				livingSpace: data.livingSpace,
+				household: data.people,
+			});
+		} else {
+			// Update existing entry
+			await db
+				.update(userDataTable)
+				.set({
+					property: data.houseType,
+					livingSpace: data.livingSpace,
+					household: data.people,
+				})
+				.where(eq(userDataTable.userId, userId));
+		}
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_HOUSEHOLD_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: existingData[0] ?? null,
+						new: {
+							property: data.houseType,
+							livingSpace: data.livingSpace,
+							household: data.people,
+						},
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Haushaltsdaten erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_HOUSEHOLD_ACTION,
+				error: err as unknown as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateEnergyTariffAction(userId: string, data: z.infer<typeof energyTariffSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_TARIFF_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = energyTariffSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_TARIFF_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		// Check if user data exists
+		const existingData = await db
+			.select({
+				id: userDataTable.id,
+				tariff: userDataTable.tariff,
+				basePrice: userDataTable.basePrice,
+				workingPrice: userDataTable.workingPrice,
+				monthlyPayment: userDataTable.monthlyPayment,
+				consumptionGoal: userDataTable.consumptionGoal,
+			})
+			.from(userDataTable)
+			.where(eq(userDataTable.userId, userId))
+			.limit(1);
+
+		// Recalculate consumptionGoal to keep the cost goal stable
+		let consumptionGoalUpdate: number | null = null;
+		if (existingData[0]?.consumptionGoal != null && existingData[0].workingPrice && existingData[0].basePrice) {
+			const oldCost = existingData[0].consumptionGoal * existingData[0].workingPrice + existingData[0].basePrice;
+			const newBasePrice = data.basePrice;
+			const newWorkingPrice = data.workingPrice;
+			if (newWorkingPrice > 0 && oldCost > 0) {
+				consumptionGoalUpdate = Math.round(((oldCost - newBasePrice) / newWorkingPrice) * 100) / 100;
+			}
+		}
+
+		const updateFields: Record<string, number | TariffTypeValue | undefined> = {
+			tariff: data.tariffType,
+			basePrice: data.basePrice,
+			workingPrice: data.workingPrice,
+			monthlyPayment: data.monthlyPayment,
+		};
+
+		if (consumptionGoalUpdate !== null) {
+			updateFields.consumptionGoal = consumptionGoalUpdate;
+		}
+
+		if (existingData.length === 0) {
+			// Create new user data entry
+			await db.insert(userDataTable).values({
+				userId,
+				tariff: data.tariffType,
+				basePrice: data.basePrice,
+				workingPrice: data.workingPrice,
+				monthlyPayment: data.monthlyPayment,
+			});
+		} else {
+			// Update existing entry
+			await db.update(userDataTable).set(updateFields).where(eq(userDataTable.userId, userId));
+		}
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_ENERGY_TARIFF_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: existingData[0] ?? null,
+						new: data,
+						consumptionGoal: consumptionGoalUpdate ?? null,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Energietarif erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_ENERGY_TARIFF_ACTION,
+				error: err as unknown as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateEnergyGoalAction(userId: string, data: z.infer<typeof energyGoalSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = energyGoalSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+					result: "failed",
+					details: { success: false, reason: ErrorTypes.INVALID_INPUT, user: user.id, session: sid, targetUser: userId, data },
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		const existingData = await db
+			.select({
+				basePrice: userDataTable.basePrice,
+				workingPrice: userDataTable.workingPrice,
+				goal: userDataTable.consumptionGoal,
+			})
+			.from(userDataTable)
+			.where(eq(userDataTable.userId, userId))
+			.limit(1);
+
+		if (existingData.length === 0 || !existingData[0].workingPrice || !existingData[0].basePrice) {
+			const reason = existingData.length === 0 ? ErrorTypes.USER_NOT_FOUND : ErrorTypes.NO_TARRIF_DATA;
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+					result: "failed",
+					details: { success: false, reason, user: user.id, session: sid, targetUser: userId },
+				}),
+			);
+			return {
+				success: false,
+				message: "Für diesen Benutzer sind keine vollständigen Tarifdaten hinterlegt.",
+			};
+		}
+
+		if (existingData[0].basePrice > data.cost) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+					result: "failed",
+					details: { success: false, reason: ErrorTypes.INVALID_INPUT, user: user.id, session: sid, targetUser: userId, data },
+				}),
+			);
+			return {
+				success: false,
+				message: "Der Basispreis ist höher als Ihr angegebener Preis.",
+			};
+		}
+
+		const consumption = (data.cost - existingData[0].basePrice) / existingData[0].workingPrice;
+		const roundedConsumption = Math.round(consumption * 100) / 100;
+
+		await db
+			.update(userDataTable)
+			.set({ consumptionGoal: roundedConsumption })
+			.where(eq(userDataTable.userId, userId));
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+		revalidatePath(`/admin/users/${userId}/edit/tariff`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: { old: { consumptionGoal: existingData[0].goal }, new: { consumptionGoal: roundedConsumption } },
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Energiekosten-Limit erfolgreich gespeichert.",
+			payload: roundedConsumption,
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_ENERGY_GOAL_ACTION,
+				error: err as unknown as Error,
+				details: { user: null, session: null, targetUser: userId },
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateAccountStatusAction(userId: string, data: z.infer<typeof adminAccountStatusSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ACCOUNT_STATUS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = adminAccountStatusSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_ACCOUNT_STATUS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		const oldData = await db
+			.select({
+				isActive: userTable.isActive,
+				isAdmin: userTable.isAdmin,
+				isParticipant: userTable.isParticipant,
+				isSimulationFree: userTable.isSimulationFree,
+			})
+			.from(userTable)
+			.where(eq(userTable.id, userId))
+			.limit(1);
+
+		if (oldData.length === 0) {
+			return {
+				success: false,
+				message: "Benutzer nicht gefunden.",
+			};
+		}
+
+		await db
+			.update(userTable)
+			.set({
+				isActive: data.isActive,
+				isAdmin: data.isAdmin,
+				isParticipant: data.isParticipant,
+				isSimulationFree: data.isSimulationFree,
+			})
+			.where(eq(userTable.id, userId));
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_ACCOUNT_STATUS_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: oldData[0],
+						new: data,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Kontostatus erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_ACCOUNT_STATUS_ACTION,
+				error: err as unknown as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+// ============================================================================
+// Admin Simulation Settings Actions
+// ============================================================================
+
+interface ActionResult {
+	success: boolean;
+	message: string;
+}
+
+export async function adminUpdateSimulationEvSettingsAction(
+	userId: string,
+	data: z.infer<typeof evSettingsSchema>,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_EV_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const validate = evSettingsSchema.safeParse(data);
+		if (!validate.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_EV_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Die Daten sind nicht gültig.",
+			};
+		}
+
+		const payload = validate.data;
+		const existing = await db
+			.select()
+			.from(simulationEvSettingsTable)
+			.where(eq(simulationEvSettingsTable.userId, userId))
+			.limit(1);
+
+		await db
+			.insert(simulationEvSettingsTable)
+			.values({
+				userId,
+				chargingSpeed: payload.chargingSpeed,
+				evCapacityKwh: payload.evCapacityKwh,
+				dailyDrivingDistanceKm: payload.dailyDrivingDistanceKm ?? null,
+				avgConsumptionPer100Km: payload.avgConsumptionPer100Km ?? null,
+				defaultSchedule: payload.defaultSchedule,
+				weekdaySchedules: payload.weekdaySchedules,
+			})
+			.onConflictDoUpdate({
+				target: simulationEvSettingsTable.userId,
+				set: {
+					chargingSpeed: payload.chargingSpeed,
+					evCapacityKwh: payload.evCapacityKwh,
+					dailyDrivingDistanceKm: payload.dailyDrivingDistanceKm ?? null,
+					avgConsumptionPer100Km: payload.avgConsumptionPer100Km ?? null,
+					defaultSchedule: payload.defaultSchedule,
+					weekdaySchedules: payload.weekdaySchedules,
+					updatedAt: sql`now()`,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_EV_SETTINGS_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: payload,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "EV-Simulation gespeichert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_EV_SETTINGS_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateSimulationSolarSettingsAction(
+	userId: string,
+	data: z.infer<typeof solarSettingsSchema>,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_SOLAR_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const validate = solarSettingsSchema.safeParse(data);
+		if (!validate.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_SOLAR_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Die Daten sind nicht gültig.",
+			};
+		}
+
+		const payload = validate.data;
+		const inverterPower = payload.inverterPower === "" ? null : payload.inverterPower;
+		const sunHoursPerDay = payload.sunHoursPerDay ?? null;
+		const location = payload.location ?? null;
+		const existing = await db
+			.select()
+			.from(simulationSolarSettingsTable)
+			.where(eq(simulationSolarSettingsTable.userId, userId))
+			.limit(1);
+
+		await db
+			.insert(simulationSolarSettingsTable)
+			.values({
+				userId,
+				peakPower: payload.peakPower,
+				orientation: payload.orientation,
+				inverterPower,
+				sunHoursPerDay,
+				location,
+			})
+			.onConflictDoUpdate({
+				target: simulationSolarSettingsTable.userId,
+				set: {
+					peakPower: payload.peakPower,
+					orientation: payload.orientation,
+					inverterPower,
+					sunHoursPerDay,
+					location,
+					updatedAt: sql`now()`,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_SOLAR_SETTINGS_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: {
+							...payload,
+							inverterPower,
+						},
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Solar-Simulation gespeichert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_SOLAR_SETTINGS_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateSimulationHeatPumpSettingsAction(
+	userId: string,
+	data: z.infer<typeof heatPumpSettingsSchema>,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_HEAT_PUMP_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const validate = heatPumpSettingsSchema.safeParse(data);
+		if (!validate.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_HEAT_PUMP_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Die Daten sind nicht gültig.",
+			};
+		}
+
+		const payload = validate.data;
+		const existing = await db
+			.select()
+			.from(simulationHeatPumpSettingsTable)
+			.where(eq(simulationHeatPumpSettingsTable.userId, userId))
+			.limit(1);
+
+		await db
+			.insert(simulationHeatPumpSettingsTable)
+			.values({
+				userId,
+				source: payload.source,
+				powerKw: payload.powerKw,
+				bufferLiter: payload.bufferLiter ?? null,
+				defaultSchedule: payload.defaultSchedule,
+				weekdaySchedules: payload.weekdaySchedules,
+			})
+			.onConflictDoUpdate({
+				target: simulationHeatPumpSettingsTable.userId,
+				set: {
+					source: payload.source,
+					powerKw: payload.powerKw,
+					bufferLiter: payload.bufferLiter ?? null,
+					defaultSchedule: payload.defaultSchedule,
+					weekdaySchedules: payload.weekdaySchedules,
+					updatedAt: sql`now()`,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_HEAT_PUMP_SETTINGS_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: payload,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Wärmepumpen-Simulation gespeichert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_HEAT_PUMP_SETTINGS_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateSimulationBatterySettingsAction(
+	userId: string,
+	data: z.infer<typeof batterySettingsSchema>,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_BATTERY_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const validate = batterySettingsSchema.safeParse(data);
+		if (!validate.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_BATTERY_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Die Daten sind nicht gültig.",
+			};
+		}
+
+		const payload = validate.data;
+		const existing = await db
+			.select()
+			.from(simulationBatterySettingsTable)
+			.where(eq(simulationBatterySettingsTable.userId, userId))
+			.limit(1);
+
+		await db
+			.insert(simulationBatterySettingsTable)
+			.values({
+				userId,
+				capacityKwh: payload.capacityKwh,
+				maxPowerKw: payload.maxPowerKw,
+			})
+			.onConflictDoUpdate({
+				target: simulationBatterySettingsTable.userId,
+				set: {
+					capacityKwh: payload.capacityKwh,
+					maxPowerKw: payload.maxPowerKw,
+					updatedAt: sql`now()`,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_BATTERY_SETTINGS_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: payload,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Batteriespeicher-Simulation gespeichert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_BATTERY_SETTINGS_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateSimulationTouTariffSettingsAction(
+	userId: string,
+	data: z.infer<typeof touTariffSchema>,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_TOU_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const validate = touTariffSchema.safeParse(data);
+		if (!validate.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_TOU_SETTINGS_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Die Daten sind nicht gültig.",
+			};
+		}
+
+		const payload = validate.data;
+		const existing = await db
+			.select()
+			.from(simulationTouTariffSettingsTable)
+			.where(eq(simulationTouTariffSettingsTable.userId, userId))
+			.limit(1);
+
+		await db
+			.insert(simulationTouTariffSettingsTable)
+			.values({
+				userId,
+				pricingMode: payload.pricingMode,
+				basePrice: payload.basePrice,
+				standardPrice: payload.standardPrice,
+				zones: payload.zones ?? [],
+				weekdayZones: payload.weekdayZones,
+				spotMarkup: payload.spotMarkup,
+			})
+			.onConflictDoUpdate({
+				target: simulationTouTariffSettingsTable.userId,
+				set: {
+					pricingMode: payload.pricingMode,
+					basePrice: payload.basePrice,
+					standardPrice: payload.standardPrice,
+					zones: payload.zones ?? [],
+					weekdayZones: payload.weekdayZones,
+					spotMarkup: payload.spotMarkup,
+					updatedAt: sql`now()`,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_TOU_SETTINGS_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: payload,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "TOU-Tarif-Simulation gespeichert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_SIMULATION_TOU_SETTINGS_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminToggleSimulationEnabledAction(
+	userId: string,
+	simulationType: SimulationTypeValue,
+	enabled: boolean,
+): Promise<ActionResult> {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_TOGGLE_SIMULATION_ENABLED_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const tableMap = {
+			[SimulationType.EV]: simulationEvSettingsTable,
+			[SimulationType.Solar]: simulationSolarSettingsTable,
+			[SimulationType.HeatPump]: simulationHeatPumpSettingsTable,
+			[SimulationType.Battery]: simulationBatterySettingsTable,
+			[SimulationType.TOU]: simulationTouTariffSettingsTable,
+		};
+
+		const table = tableMap[simulationType];
+		if (!table) {
+			return {
+				success: false,
+				message: "Ungültiger Simulationstyp.",
+			};
+		}
+
+		await db
+			.update(table)
+			.set({
+				enabled,
+				updatedAt: sql`now()`,
+			})
+			.where(eq(table.userId, userId));
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_TOGGLE_SIMULATION_ENABLED_ACTION,
+				result: "success",
+				details: {
+					user: user.id,
+					session: sid,
+					reason: null,
+					success: true,
+					targetUser: userId,
+					data: {
+						simulationType,
+						enabled,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: enabled ? "Simulation aktiviert." : "Simulation deaktiviert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_TOGGLE_SIMULATION_ENABLED_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminCreateUserAction(data: z.infer<typeof adminCreateUserSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = adminCreateUserSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						data: { ...data, password: "[REDACTED]", passwordRepeat: "[REDACTED]" },
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		if (data.mail.length >= 256) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.STRING_TOO_LONG,
+						user: user.id,
+						session: sid,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "E-Mail muss unter dem Zeichenlimit von 256 Zeichen liegen.",
+			};
+		}
+
+		if (data.password.length >= 256) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.STRING_TOO_LONG,
+						user: user.id,
+						session: sid,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Passwort muss unter dem Zeichenlimit von 256 Zeichen liegen.",
+			};
+		}
+
+		// Check if email is already in use
+		const existingUsers = await db
+			.select({ id: userTable.id })
+			.from(userTable)
+			.where(eq(userTable.email, data.mail))
+			.limit(1);
+
+		if (existingUsers.length > 0) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.EMAIL_USED,
+						user: user.id,
+						session: sid,
+						email: data.mail,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "E-Mail wird bereits verwendet.",
+			};
+		}
+
+		let userId: string;
+		if (data.userID && data.userID.trim() !== "") {
+			const existingId = await db
+				.select({ id: userTable.id })
+				.from(userTable)
+				.where(eq(userTable.id, data.userID))
+				.limit(1);
+
+			if (existingId.length > 0) {
+				waitUntil(
+					logAction({
+						fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+						result: "failed",
+						details: {
+							success: false,
+							reason: ErrorTypes.ID_USED,
+							user: user.id,
+							session: sid,
+						},
+					}),
+				);
+				return {
+					success: false,
+					message: "Pseudonym wird bereits als ID verwendet.",
+				};
+			}
+			userId = data.userID;
+		} else {
+			userId = genID(30);
+		}
+		const passwordHash = await hash(data.password);
+
+		await db.transaction(async (trx) => {
+			await trx.insert(userTable).values({
+				id: userId,
+				firstname: data.firstname,
+				lastname: data.lastname,
+				username: `${data.firstname} ${data.lastname}`,
+				email: data.mail,
+				password: passwordHash,
+				address: data.address,
+				phone: null,
+				isAdmin: data.isAdmin,
+				isParticipant: data.isParticipant,
+				isActive: data.activeImmediately,
+				activationDate: data.activeImmediately ? new Date() : null,
+			});
+			await trx.insert(userDataTable).values({
+				userId,
+				electricityMeterNumber: null,
+				electricityMeterType: null,
+				electricityMeterImgUrl: null,
+				installationComment: null,
+			});
+			await trx.insert(reportConfigTable).values({
+				userId,
+			});
+		});
+
+		revalidatePath("/admin/users");
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					createdUser: userId,
+					data: {
+						email: data.mail,
+						firstname: data.firstname,
+						lastname: data.lastname,
+						isAdmin: data.isAdmin,
+						isParticipant: data.isParticipant,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Nutzer erfolgreich erstellt.",
+			path: "/admin/users",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_CREATE_USER_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateHintConfigAction(userId: string, data: z.infer<typeof adminHintConfigSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_HINT_CONFIG_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = adminHintConfigSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_HINT_CONFIG_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		// Get or create hint config
+		const existingConfig = await getOrCreateHintConfig(userId);
+		const stageChanged = existingConfig.stage !== data.stage;
+
+		// Prepare update data
+		const updateData: Parameters<typeof updateHintConfig>[1] = {
+			stage: data.stage as "simple" | "intermediate" | "expert",
+			hintsEnabled: data.hintsEnabled,
+		};
+
+		// If stage changed, reset progress
+		if (stageChanged) {
+			updateData.hintsDaysSeenInStage = 0;
+			updateData.stageStartedAt = new Date();
+		}
+
+		await updateHintConfig(userId, updateData);
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_HINT_CONFIG_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: {
+							stage: existingConfig.stage,
+							hintsEnabled: existingConfig.hintsEnabled,
+						},
+						new: data,
+						stageChanged,
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: stageChanged
+				? "Hinweis-Konfiguration aktualisiert. Fortschritt wurde zurückgesetzt."
+				: "Hinweis-Konfiguration erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_HINT_CONFIG_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}
+
+export async function adminUpdateExperimentAction(userId: string, data: z.infer<typeof adminExperimentSchema>) {
+	try {
+		const { user } = await getCurrentSession();
+		const cookieStore = await cookies();
+		const sid = cookieStore.get("sid")?.value;
+
+		if (!user || !user.isAdmin) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_EXPERIMENT_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: user ? ErrorTypes.NOT_ADMIN : ErrorTypes.NOT_LOGGED_IN,
+						user: user?.id ?? null,
+						session: sid,
+						targetUser: userId,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Sie sind nicht berechtigt, diese Aktion durchzuführen.",
+			};
+		}
+
+		const valid = adminExperimentSchema.safeParse(data);
+		if (!valid.success) {
+			waitUntil(
+				logAction({
+					fn: LogActionTypes.ADMIN_UPDATE_EXPERIMENT_ACTION,
+					result: "failed",
+					details: {
+						success: false,
+						reason: ErrorTypes.INVALID_INPUT,
+						user: user.id,
+						session: sid,
+						targetUser: userId,
+						data,
+					},
+				}),
+			);
+			return {
+				success: false,
+				message: "Bitte überprüfen Sie Ihre Eingaben.",
+			};
+		}
+
+		const payload = valid.data;
+		const existing = await db
+			.select()
+			.from(userExperimentDataTable)
+			.where(eq(userExperimentDataTable.userId, userId))
+			.limit(1);
+
+		const installationDate = payload.installationDate ? new Date(payload.installationDate) : null;
+		const deinstallationDate = payload.deinstallationDate ? new Date(payload.deinstallationDate) : null;
+
+		await db
+			.insert(userExperimentDataTable)
+			.values({
+				userId,
+				experimentStatus: payload.experimentStatus as ExperimentPhaseValue | null,
+				experimentNumber: Number.isNaN(payload.experimentNumber ?? Number.NaN)
+					? null
+					: payload.experimentNumber,
+				installationDate,
+				deinstallationDate,
+				getsPaid: payload.getsPaid,
+				usesProlific: payload.usesProlific,
+			})
+			.onConflictDoUpdate({
+				target: userExperimentDataTable.userId,
+				set: {
+					experimentStatus: payload.experimentStatus as ExperimentPhaseValue | null,
+					experimentNumber: Number.isNaN(payload.experimentNumber ?? Number.NaN)
+						? null
+						: payload.experimentNumber,
+					installationDate,
+					deinstallationDate,
+					getsPaid: payload.getsPaid,
+					usesProlific: payload.usesProlific,
+				},
+			});
+
+		revalidatePath(`/admin/users/${userId}`);
+		revalidatePath(`/admin/users/${userId}/edit`);
+		revalidatePath(`/admin/users/${userId}/edit/experiment`);
+
+		waitUntil(
+			logAction({
+				fn: LogActionTypes.ADMIN_UPDATE_EXPERIMENT_ACTION,
+				result: "success",
+				details: {
+					success: true,
+					reason: null,
+					user: user.id,
+					session: sid,
+					targetUser: userId,
+					data: {
+						old: existing[0] ?? null,
+						new: {
+							experimentStatus: payload.experimentStatus,
+							experimentNumber: payload.experimentNumber,
+							installationDate,
+							deinstallationDate,
+							getsPaid: payload.getsPaid,
+							usesProlific: payload.usesProlific,
+						},
+					},
+				},
+			}),
+		);
+
+		return {
+			success: true,
+			message: "Experimentdaten erfolgreich aktualisiert.",
+		};
+	} catch (err) {
+		console.error(err);
+		waitUntil(
+			logError({
+				fn: LogActionTypes.ADMIN_UPDATE_EXPERIMENT_ACTION,
+				error: err as Error,
+				details: {
+					user: null,
+					session: null,
+					targetUser: userId,
+				},
+			}),
+		);
+		return {
+			success: false,
+			message: "Es ist ein unerwarteter Fehler aufgetreten.",
+		};
+	}
+}

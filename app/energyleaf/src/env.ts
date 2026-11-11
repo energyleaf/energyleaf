@@ -1,0 +1,79 @@
+import { createEnv } from "@t3-oss/env-nextjs";
+import { vercel } from "@t3-oss/env-nextjs/presets-zod";
+import { z } from "zod";
+
+export const env = createEnv({
+	skipValidation: !!process.env.SKIP_ENV_VALIDATION, //for container builds
+	server: {
+		// Database - either use DATABASE_URL directly or construct from individual POSTGRES_* vars
+		DATABASE_URL: z.string().url().optional(),
+		POSTGRES_HOST: z.string().optional(),
+		POSTGRES_PORT: z
+			.string()
+			.transform((val) => Number(val))
+			.optional(),
+		POSTGRES_USER: z.string().optional(),
+		POSTGRES_PASSWORD: z.string().optional(),
+		POSTGRES_DB: z.string().optional(),
+
+		// S3
+		S3_ENDPOINT: z.string().url().optional(),
+		S3_REGION: z.string().optional(),
+		S3_ACCESS_KEY: z.string().optional(),
+		S3_SECRET_KEY: z.string().optional(),
+
+		// Cron
+		CRON_SECRET: z.string(),
+
+		// Resend
+		//RESEND_API_MAIL: z.string().email().optional(),
+		//RESEND_API_KEY: z.string().optional(),
+
+		NODEMAILER_MAIL: z.string().email().optional(),
+		NODEMAILER_ENDPOINT: z.string().optional(),
+		NODEMAILER_PORT: z
+			.string()
+			.transform((val) => Number(val))
+			.refine((val) => val > 0)
+			.optional(),
+
+		// App
+		// Base URL of this instance, used for links in mails (e.g. password reset);
+		// unused when deployed on Vercel (VERCEL_* URLs take precedence)
+		// in mails the usage defaults to localhost:3000
+		APP_URL: z.string().url().optional(),
+
+		// Weather Forecast
+		WEATHERAPI_KEY: z.string().min(1).optional(),
+
+		// Settings
+		DISABLE_SIGNUP: z
+			.string()
+			.optional()
+			.default("false")
+			.transform((s) => s === "true" || s === "1"),
+		DISABLE_EXPERIMENT: z
+			.string()
+			.optional()
+			.default("false")
+			.transform((s) => s === "true" || s === "1"),
+		DISABLE_TRACKING: z
+			.string()
+			.optional()
+			.default("true")
+			.transform((s) => s === "true" || s === "1"),
+		DISABLE_LOGS: z
+			.string()
+			.optional()
+			.default("true")
+			.transform((s) => s === "true" || s === "1"),
+		DISABLE_DEMO: z
+			.string()
+			.optional()
+			.default("true")
+			.transform((s) => s === "true" || s === "1"),
+	},
+	client: {},
+	experimental__runtimeEnv: {},
+	extends: [vercel()],
+});

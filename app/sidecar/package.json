@@ -1,0 +1,12 @@
+{
+	"type": "module",
+	"dependencies": {
+		"drizzle-orm": "latest",
+		"pg": "latest",
+		"tsx": "latest"
+	},
+	"devDependencies": {
+		"typescript": "latest",
+		"@types/node": "latest"
+	}
+}

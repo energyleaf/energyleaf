@@ -1,0 +1,10 @@
+1,31 * * * * /app/node_modules/.bin/tsx /app/drain.ts enqueue-peaks
+1,31 * * * * /app/node_modules/.bin/tsx /app/drain.ts enqueue-anomalies
+0 1 * * * /app/node_modules/.bin/tsx /app/drain.ts enqueue-reports
+0 6 * * * /app/node_modules/.bin/tsx /app/drain.ts enqueue-hints
+15 13 * * * /app/node_modules/.bin/tsx /app/drain.ts request-spot
+
+*/5 * * * * /app/node_modules/.bin/tsx /app/drain.ts drain-peaks
+*/5 * * * * /app/node_modules/.bin/tsx /app/drain.ts drain-anomalies
+*/5 * * * * /app/node_modules/.bin/tsx /app/drain.ts drain-reports
+*/5 * * * * /app/node_modules/.bin/tsx /app/drain.ts drain-hints
